@@ -18,23 +18,24 @@ sys.path.insert(0, os.getcwd())
 # Standard-library modules this app needs. If a student's own file with the
 # same name (e.g. random.py) is found first, Python would load that file
 # instead and the app crashes. So we load the real ones from Python itself.
-STDLIB_MODULES = ["random", "queue", "threading", "datetime", "functools", "abc", "string"]
+STDLIB_MODULES = ["random", "queue", "threading", "datetime", "string", "calendar", "bisect"]
 
 
 def use_real_stdlib_modules():
-    stdlib = os.path.normcase(os.path.abspath(sysconfig.get_paths()["stdlib"]))
+    """Always load these modules from Python's own library folder."""
+    stdlib = os.path.abspath(sysconfig.get_paths()["stdlib"])
     for name in STDLIB_MODULES:
         real_file = os.path.join(stdlib, name + ".py")
-        if not os.path.exists(real_file):
-            continue
+        if name in sys.modules or not os.path.exists(real_file):
+            continue                      # already loaded by Python itself -> it is the real one
         spec = importlib.util.find_spec(name)
-        found = os.path.normcase(os.path.abspath(spec.origin)) if spec and spec.origin else ""
-        if found and found != os.path.normcase(real_file) and found.endswith(".py"):
-            print(f"Note: ignoring '{spec.origin}' (it hides Python's own '{name}' module).")
-            real_spec = importlib.util.spec_from_file_location(name, real_file)
-            module = importlib.util.module_from_spec(real_spec)
-            sys.modules[name] = module
-            real_spec.loader.exec_module(module)
+        found = spec.origin if spec and spec.origin else "a folder named " + name
+        if os.path.normcase(os.path.abspath(found)) != os.path.normcase(real_file):
+            print(f"Note: ignoring {found} (it hides Python's own '{name}' module).")
+        real_spec = importlib.util.spec_from_file_location(name, real_file)
+        module = importlib.util.module_from_spec(real_spec)
+        sys.modules[name] = module
+        real_spec.loader.exec_module(module)
 
 
 use_real_stdlib_modules()
