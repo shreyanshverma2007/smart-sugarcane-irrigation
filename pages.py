@@ -918,12 +918,21 @@ class RecommendationPage(BasePage):
 
     def refresh(self):
         recs = self.results()
-        fill_tree(self.tree, [(r["plot_id"], (r["priority"], r["plot_name"], r["action"], f"{r['moisture']:.1f}",
-                                              r["threshold"], r["net_mm"],
-                                              f"{r['volume_l']:,}" if r["priority"] <= 3 else "-",
-                                              r["duration_h"] if r["priority"] <= 3 else "-",
-                                              r["reason"])) for r in recs],
-                  [PRIORITY_TAG[r["priority"]] for r in recs])
+        running = self.app.sensor.pumps_running()          # plot_id -> pump hours left
+        rows, tags = [], []
+        for r in recs:
+            if r["plot_id"] in running:                     # already being watered
+                rows.append((r["plot_id"], ("-", r["plot_name"], "PUMP ON - WATERING", f"{r['moisture']:.1f}",
+                                            r["threshold"], r["net_mm"], "-", f"{running[r['plot_id']]:.1f} left",
+                                            "Moisture is rising; it will stop by itself")))
+                tags.append("rain")
+                continue
+            rows.append((r["plot_id"], (r["priority"], r["plot_name"], r["action"], f"{r['moisture']:.1f}",
+                                        r["threshold"], r["net_mm"],
+                                        f"{r['volume_l']:,}" if r["priority"] <= 3 else "-",
+                                        r["duration_h"] if r["priority"] <= 3 else "-", r["reason"])))
+            tags.append(PRIORITY_TAG[r["priority"]])
+        fill_tree(self.tree, rows, tags)
         if not self.tree.selection() and recs:
             self.tree.selection_set(str(recs[0]["plot_id"]))
         self.explain()
@@ -948,6 +957,10 @@ class RecommendationPage(BasePage):
                 "",
                 f"Decision: {r['action']}  -  {r['reason']}",
             ]
+            left = self.app.sensor.pumps_running().get(plot.plot_id)
+            if left:
+                lines += ["", f"PUMP IS ON: {left:.1f} pump hours left. The numbers above are what is still",
+                          "missing right now - they shrink as the soil fills up."]
             self.text.insert("1.0", "\n".join(lines))
         self.text.configure(state="disabled")
 
@@ -956,6 +969,9 @@ class RecommendationPage(BasePage):
         if not plot:
             messagebox.showinfo("Irrigate", "Select a plot first.")
             return
+        if plot.plot_id in self.app.sensor.pumps_running():
+            messagebox.showinfo("Irrigate", f"The pump for '{plot.name}' is already ON.")
+            return
         r = self.app.adv["basic"].analyze(plot, self.weather)
         if r["volume_l"] <= 0:
             messagebox.showinfo("Irrigate", f"'{plot.name}' is already at field capacity.")
@@ -963,9 +979,10 @@ class RecommendationPage(BasePage):
         self.app.start_irrigation(plot, r["duration_h"], r["volume_l"], "Recommendation")
 
     def irrigate_urgent(self):
-        recs = [r for r in self.results() if r["priority"] == 1]
+        running = self.app.sensor.pumps_running()
+        recs = [r for r in self.results() if r["priority"] == 1 and r["plot_id"] not in running]
         if not recs:
-            messagebox.showinfo("Irrigate", "No plot is below its safe moisture level right now.")
+            messagebox.showinfo("Irrigate", "No dry plot is waiting - pumps are already on or plots are fine.")
         for r in recs:
             self.app.start_irrigation(self.farm.get_plot(r["plot_id"]), r["duration_h"], r["volume_l"], "Recommendation")
 
@@ -1183,7 +1200,8 @@ class PumpPage(BasePage):
             gap = max(0, int(self.gap.get()))
         except (tk.TclError, ValueError):
             pumps, gap = 1, 10
-        recs = [self.app.adv["weather"].analyze(p, self.weather) for p in self.farm.plots]
+        running = self.app.sensor.pumps_running()          # skip plots that are already being watered
+        recs = [self.app.adv["weather"].analyze(p, self.weather) for p in self.farm.plots if p.plot_id not in running]
         return self.app.scheduler.build(recs, self.start.get(), pumps, gap, self.planned.get())
 
     def refresh(self):
