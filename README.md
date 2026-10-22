@@ -67,7 +67,7 @@ Sidebar item **13. My Lab Programs 1-8** runs every one of my lab programs and s
 | 11 | Yield Prediction | FAO-33 (Ky = 1.2) yield, sugar, revenue at the FRP |
 | 12 | Integrated Dashboard | Everything together, every advisor's report per plot, export a .txt report |
 
-**Simulation controls** (header): *Pause sensors* and *Sim hours/tick*. Raise *Sim hours/tick* to make the plots dry out faster, so the alerts show up during a demo.
+**Simulation controls** (header): *Pause sensors*, *Sim hours/tick* (raise it so plots dry faster during a demo) and **↺ Reset demo**, which gives every plot a fresh, different moisture level (some dry, some fine), and clears alerts, SMS, pumps and history.
 
 ## Formulas used
 * ET0 (Hargreaves) = 0.0023 × Ra × (Tmean + 17.8) × √(Tmax − Tmin)

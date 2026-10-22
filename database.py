@@ -144,6 +144,10 @@ EXP8_QUERIES = [
 
 TS_FMT = "%Y-%m-%d %H:%M:%S"
 
+# Where each demo plot's moisture starts, relative to its own safe level:
+#   plan in a few days, irrigate now, well watered, very dry, irrigate soon, well watered
+DEMO_OFFSETS = [0.06, -0.10, 0.25, -0.32, 0.02, 0.35]
+
 
 class Database:
     def __init__(self, path="sugarcane.db"):
@@ -360,6 +364,49 @@ class Database:
     def is_empty(self):
         return self.query("SELECT COUNT(*) AS n FROM farmers")[0]["n"] == 0
 
+    def _write_history(self, conn, plot, offset, rng):
+        """Write 7 days of 3-hourly readings that END at a chosen moisture.
+
+        offset is measured from the plot's own safe level, as a share of its
+        water range: +0.25 = well watered, 0 = just at the safe level,
+        -0.30 = very dry. Different offsets give each plot a different status.
+        """
+        fc, pwp = plot.field_capacity, plot.wilting_point
+        safe_share = 1 - plot.mad
+        m_now = pwp + min(0.97, max(0.05, safe_share + offset)) * (fc - pwp)
+        per_step = (plot.kc * 5.0 / plot.root_depth_mm * 100) / 8   # loss every 3 hours
+        ts = datetime.now().replace(minute=0, second=0, microsecond=0)
+        values, m = [], m_now
+        for step in range(56):                                # walk BACKWARD in time
+            values.append((ts - timedelta(hours=3 * step), m))
+            m += per_step * rng.uniform(0.7, 1.3)
+            if m >= fc:                                       # an irrigation happened here
+                event_ts = ts - timedelta(hours=3 * step)
+                duration = round(rng.uniform(2, 6) if plot.method == "Drip" else rng.uniform(4, 8), 1)
+                conn.execute("""INSERT INTO irrigation_events (plot_id, start_ts, duration_h, volume_l, source)
+                                VALUES (?,?,?,?,?)""",
+                             (plot.plot_id, event_ts.strftime(TS_FMT), duration, duration * plot.pump_lph, "Manual"))
+                m = pwp + rng.uniform(0.35, 0.55) * (fc - pwp)
+        for t, value in reversed(values):
+            temp = 23 + 9 * max(0.0, 1 - abs(t.hour - 14) / 8) + rng.uniform(-1, 1)
+            hum = 75 - (temp - 23) * 2.5 + rng.uniform(-3, 3)
+            conn.execute("""INSERT INTO sensor_readings (plot_id, ts, moisture, temperature, humidity)
+                            VALUES (?,?,?,?,?)""",
+                         (plot.plot_id, t.strftime(TS_FMT), round(value + rng.uniform(-0.3, 0.3), 2),
+                          round(temp, 1), round(hum, 1)))
+
+    def reset_demo_readings(self):
+        """Give every plot fresh, DIFFERENT moisture levels (for demos). Plots themselves are kept."""
+        rng = random.Random(42)
+        rows = self.query("SELECT * FROM plots ORDER BY plot_id")
+        with self._lock:
+            conn = self.conn
+            for table in ("sensor_readings", "irrigation_events", "alerts", "notifications"):
+                conn.execute(f"DELETE FROM {table}")
+            for i, row in enumerate(rows):
+                self._write_history(conn, self._row_to_plot(row), DEMO_OFFSETS[i % len(DEMO_OFFSETS)], rng)
+            conn.commit()
+
     def seed_demo_data(self):
         """Create one farmer, one farm, six plots and 7 days of sensor history."""
         if not self.is_empty():
@@ -370,49 +417,24 @@ class Database:
         farm_id = self.execute("INSERT INTO farms (farmer_id, name, location) VALUES (?,?,?)",
                                (fid, "patil sugarcane farm", "Sakarwadi, Ahmednagar, MH"))
         today = date.today()
-        demo = [  # name, acres, soil, variety, method, days since planting, pump L/h, start moisture
-            ("North Block", 2.5, "Black Cotton (Vertisol)", "Co 86032", "Drip", 210, 30000, 0.62),
-            ("River Side", 2.0, "Clay Loam", "CoM 0265", "Furrow", 150, 75000, 0.40),
-            ("Well Plot", 1.5, "Black Cotton (Vertisol)", "Co 0238", "Drip", 60, 20000, 0.85),
-            ("South Field", 2.5, "Red Laterite", "Co 86032", "Flood", 300, 90000, 0.20),
-            ("Ratoon Patch", 2.0, "Sandy Loam", "MS 10001", "Drip", 95, 25000, 0.55),
-            ("Canal Strip", 3.0, "Clay Loam", "CoM 0265", "Furrow", 30, 80000, 0.75),
+        demo = [  # name, acres, soil, variety, method, days since planting, pump L/h
+            ("North Block", 2.5, "Black Cotton (Vertisol)", "Co 86032", "Drip", 210, 30000),
+            ("River Side", 2.0, "Clay Loam", "CoM 0265", "Furrow", 150, 75000),
+            ("Well Plot", 1.5, "Black Cotton (Vertisol)", "Co 0238", "Drip", 60, 20000),
+            ("South Field", 2.5, "Red Laterite", "Co 86032", "Flood", 300, 90000),
+            ("Ratoon Patch", 2.0, "Sandy Loam", "MS 10001", "Drip", 95, 25000),
+            ("Canal Strip", 3.0, "Clay Loam", "CoM 0265", "Furrow", 30, 80000),
         ]
         conn = self.conn
         with self._lock:
-            for name, acres, soil, var, method, age, pump, start_frac in demo:
+            for i, (name, acres, soil, var, method, age, pump) in enumerate(demo):
                 cur = conn.execute(
                     """INSERT INTO plots (farm_id, name, area_acres, soil_type, variety, method,
                                           planting_date, pump_lph) VALUES (?,?,?,?,?,?,?,?)""",
                     (farm_id, name, acres, soil, var, method,
                      str(today - timedelta(days=age)), pump))
-                plot_id = cur.lastrowid
-                plot = create_plot(method, plot_id=plot_id, name=name, area_acres=acres,
+                plot = create_plot(method, plot_id=cur.lastrowid, name=name, area_acres=acres,
                                    soil_type=soil, variety=var,
                                    planting_date=today - timedelta(days=age), pump_lph=pump)
-                fc, pwp = plot.field_capacity, plot.wilting_point
-                # walk BACKWARD from today's moisture so history ends at the chosen level
-                m_now = pwp + start_frac * (fc - pwp)
-                per_step = (plot.kc * 5.0 / plot.root_depth_mm * 100) / 8   # 3-hourly loss
-                ts = datetime.now().replace(minute=0, second=0, microsecond=0)
-                values, m = [], m_now
-                for step in range(56):
-                    values.append((ts - timedelta(hours=3 * step), m))
-                    m += per_step * rng.uniform(0.7, 1.3)
-                    if m >= fc:                     # an irrigation happened here
-                        event_ts = ts - timedelta(hours=3 * step)
-                        duration = round(rng.uniform(2, 6) if method == "Drip" else rng.uniform(4, 8), 1)
-                        conn.execute("""INSERT INTO irrigation_events
-                                        (plot_id, start_ts, duration_h, volume_l, source)
-                                        VALUES (?,?,?,?,?)""",
-                                     (plot_id, event_ts.strftime(TS_FMT), duration, duration * pump, "Manual"))
-                        m = pwp + rng.uniform(0.35, 0.55) * (fc - pwp)
-                for t, value in reversed(values):
-                    hour = t.hour
-                    temp = 23 + 9 * max(0.0, 1 - abs(hour - 14) / 8) + rng.uniform(-1, 1)
-                    hum = 75 - (temp - 23) * 2.5 + rng.uniform(-3, 3)
-                    conn.execute("""INSERT INTO sensor_readings (plot_id, ts, moisture, temperature, humidity)
-                                    VALUES (?,?,?,?,?)""",
-                                 (plot_id, t.strftime(TS_FMT), round(value + rng.uniform(-0.3, 0.3), 2),
-                                  round(temp, 1), round(hum, 1)))
+                self._write_history(conn, plot, DEMO_OFFSETS[i % len(DEMO_OFFSETS)], rng)
             conn.commit()

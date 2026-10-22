@@ -78,7 +78,7 @@ class App(tk.Tk):
 
         # ---- threads
         self.events = queue.Queue()
-        self.sensor = SensorSimulator(self.farm, self.weather, self.db, self.events, interval=2.0, speed=3)
+        self.sensor = SensorSimulator(self.farm, self.weather, self.db, self.events, interval=2.0, speed=1)
         self.notifier = NotificationService(self.db, self.events)
 
         self._build_layout()
@@ -136,12 +136,13 @@ class App(tk.Tk):
         self.clock.pack(side="right", padx=16)
         self.pause_btn = ttk.Button(header, text="Pause sensors", command=self.toggle_pause)
         self.pause_btn.pack(side="right", padx=4)
+        ttk.Button(header, text="\u21ba Reset demo", command=self.reset_demo).pack(side="right", padx=4)
         self.speed = tk.IntVar(value=self.sensor.speed)
         tk.Scale(header, from_=1, to=24, orient="horizontal", variable=self.speed, length=100, showvalue=True,
                  bg="white", highlightthickness=0, label="Sim hours/tick", font=(self.font, 8),
                  command=lambda v: setattr(self.sensor, "speed", int(v))).pack(side="right", padx=6)
         self.auto_notify = tk.BooleanVar(value=True)
-        tk.Checkbutton(header, text="Auto-SMS alerts", variable=self.auto_notify, bg="white",
+        tk.Checkbutton(header, text="Auto-SMS", variable=self.auto_notify, bg="white",
                        font=(self.font, 9)).pack(side="right", padx=6)
 
         body = tk.Frame(self, bg=BG)
@@ -217,7 +218,7 @@ class App(tk.Tk):
 
     def update_header(self):
         f = self.farm
-        self.farm_label.configure(text=f"{f.name}  \u00b7  {f.farmer.name}  \u00b7  {len(f)} plots, {f.total_area:.1f} ac")
+        self.farm_label.configure(text=f"{f.name}  \u00b7  {len(f)} plots")
         unseen = self.db.recent_alerts(500, unack_only=True)
         self.alert_badge.configure(text=f"⚠ {len(unseen)} unseen alert(s)" if unseen else "✓ No unseen alerts",
                                    fg="#ffcdd2" if unseen else "#a5d6a7")
@@ -314,6 +315,30 @@ class App(tk.Tk):
         self.pause_btn.configure(text="Resume sensors" if paused else "Pause sensors")
         self.sensor_state.configure(text="● Sensors paused" if paused else "● Sensors live",
                                     fg="#ffe082" if paused else "#a5d6a7")
+
+    def reset_demo(self):
+        """Put every plot back to a different moisture level, clear alerts/SMS/pumps and the forecast."""
+        if not messagebox.askyesno("Reset demo", "Give every plot fresh, different moisture levels?\n"
+                                   "(Clears alerts, SMS log, irrigation history and running pumps.)"):
+            return
+        was_paused = self.sensor.paused
+        self.sensor.pause(True)
+        with self.sensor._lock:
+            self.sensor._pumps.clear()
+        while not self.events.empty():           # drop readings made before the reset
+            self.events.get_nowait()
+        self.db.reset_demo_readings()
+        self.weather.regenerate()
+        self.history = MoistureHistory(maxlen=120)
+        fresh = self.db.load_farm(self.farm.farm_id)
+        self.farm.plots[:] = fresh.plots
+        for p in self.farm.plots:
+            for r in p.readings:
+                self.history.push(p.plot_id, r.moisture)
+        self.last_level = {p.plot_id: self.adv["stress"].analyze(p, self.weather)["level"] for p in self.farm.plots}
+        self.sensor.pause(was_paused)
+        self.set_status("Demo reset - every plot now has a different moisture level.")
+        self.refresh_all()
 
     def on_close(self):
         self.sensor.stop()

@@ -1040,7 +1040,8 @@ class WeatherPage(BasePage):
             farm = SmartFarm()                            # my Exp 3 class (WeatherData + SoilData)
             farm.moisture = round(p.current_moisture, 1)
             farm.rainfall = self.weather.today().rain_mm
-            rows.append((p.plot_id, (p.name, b["action"], s["action"], f"{s['volume_l']:,}", s["rain_48h"],
+            water = f"{s['volume_l']:,}" if s["priority"] <= 3 else "-"
+            rows.append((p.plot_id, (p.name, b["action"], s["action"], water, s["rain_48h"],
                                      farm.advice_text(), s["weather_note"] or "-")))
             tags.append(PRIORITY_TAG[s["priority"]])
         fill_tree(self.tree, rows, tags)

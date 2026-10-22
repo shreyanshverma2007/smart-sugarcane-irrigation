@@ -166,7 +166,8 @@ class WeatherAwareAdvisor(IrrigationAdvisor):
                 result["reason"] = f"{rain48} mm useful rain expected in 48 h"
                 result["volume_l"], result["duration_h"] = 0, 0.0
             else:
-                factor = max(0.0, 1 - rain48 / max(result["net_mm"], 1))
+                # very dry plot: still give at least a quarter of the water now
+                factor = max(0.25, 1 - rain48 / max(result["net_mm"], 1))
                 result["volume_l"] = round(result["volume_l"] * factor)
                 result["duration_h"] = round(result["duration_h"] * factor, 2)
                 result["action"] = "IRRIGATE LIGHTLY"
